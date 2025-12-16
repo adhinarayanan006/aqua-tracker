@@ -1,53 +1,149 @@
-Imagine looking at your water tank from the side:
+/*
+ * AQUA TRACK FIRMWARE v1.0
+ * Device: ESP32 + JSN-SR04T (Waterproof)
+ * Cloud: Google Firestore
+ * * LIBRARIES REQUIRED (Install via Library Manager):
+ * 1. "Firebase Arduino Client" by Mobizt
+ */
 
-Plaintext
+#include <WiFi.h>
+#include <Firebase_ESP_Client.h>
 
-       [ SENSOR ]  <--- Mounted on the lid
-           |
-           |   <-- rawDist (The Air Gap)
-           v
-    ~~~~~~~~~~~~~~~~  <--- Water Surface
-    |              |
-    |              |
-    |  waterHeight |  <--- The Water
-    |              |
-    |______________|  <--- Tank Bottom
-1. TANK_HEIGHT_CM (Total Depth)
-What it is: The total distance from the tip of the sensor to the bottom of the empty tank.
+// Provide the token generation process info.
+#include "addons/TokenHelper.h"
+// Provide the RTDB payload printing info and other helper functions.
+#include "addons/RTDBHelper.h"
 
-How to measure: Put a tape measure through the sensor hole until it hits the bottom.
+// ==========================================
+// 1. USER CONFIGURATION
+// ==========================================
 
-Why we need it: The sensor doesn't know where the bottom is; you have to tell it.
+// Wi-Fi Credentials
+#define WIFI_SSID "YOUR_WIFI_NAME"
+#define WIFI_PASSWORD "YOUR_WIFI_PASSWORD"
 
-2. rawDist (The Air Gap)
-What it is: The distance the sensor actually measures. It measures the empty space (air) between the sensor and the water surface.
+// Firebase Settings (From Project Settings)
+#define API_KEY "YOUR_API_KEY_HERE"
+#define FIREBASE_PROJECT_ID "YOUR_PROJECT_ID" // e.g. aqua-track-123
 
-Behavior:
+// Tank Dimensions (Measure these on your real tank!)
+#define TANK_HEIGHT_CM 100.0  // Distance from Sensor to Bottom of Tank
+#define SENSOR_GAP_CM 20.0    // Distance from Sensor to "Full" Water Line (Blind zone)
 
-Tank Full = Small rawDist (e.g., 20cm).
+// ==========================================
 
-Tank Empty = Large rawDist (e.g., 100cm).
+// Pins (JSN-SR04T)
+#define TRIG_PIN 5
+#define ECHO_PIN 18
 
-3. SENSOR_GAP_CM (The Blind Zone)
-What it is: The safety distance at the top. The JSN-SR04T sensor cannot read anything closer than ~20cm. If water touches the sensor, it fails.
+// Objects
+FirebaseData fbdo;
+FirebaseAuth auth;
+FirebaseConfig config;
 
-Definition of "100% Full": We decide the tank is "Full" when the water reaches this line (e.g., 20cm from the top), not when it hits the roof.
+bool signupOK = false;
+unsigned long sendDataPrevMillis = 0;
 
-4. waterHeight
-The Math: TANK_HEIGHT_CM - rawDist
+void setup() {
+  Serial.begin(115200);
+  
+  pinMode(TRIG_PIN, OUTPUT);
+  pinMode(ECHO_PIN, INPUT);
 
-What it is: The actual depth of the water.
+  // 1. Connect to Wi-Fi
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  Serial.print("Connecting to Wi-Fi");
+  while (WiFi.status() != WL_CONNECTED) {
+    Serial.print(".");
+    delay(300);
+  }
+  Serial.println();
+  Serial.println("Connected to Wi-Fi");
 
-Example: If the tank is 100cm deep and the sensor sees 40cm of air, then there is 60cm of water.
+  // 2. Configure Firebase
+  config.api_key = API_KEY;
+  config.service_account.json.project_id = FIREBASE_PROJECT_ID;
 
-5. usableHeight
-The Math: TANK_HEIGHT_CM - SENSOR_GAP_CM
+  // Sign up anonymously
+  if (Firebase.signUp(&config, &auth, "", "")){
+    Serial.println("Firebase Auth Success");
+    signupOK = true;
+  } else {
+    Serial.printf("Auth Failed: %s\n", config.signer.signupError.message.c_str());
+  }
 
-What it is: The valid "measuring stick."
+  Firebase.begin(&config, &auth);
+  Firebase.reconnectWiFi(true);
+}
 
-Example: If your tank is 100cm deep, but the top 20cm is the blind zone, your actual usable scale is only 80cm.
+// Function to read clean distance
+float getDistance() {
+  // Clear trigger
+  digitalWrite(TRIG_PIN, LOW);
+  delayMicroseconds(2);
+  // Send pulse
+  digitalWrite(TRIG_PIN, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(TRIG_PIN, LOW);
+  
+  // Read Echo
+  long duration = pulseIn(ECHO_PIN, HIGH);
+  
+  // Calculate distance
+  // Speed of sound = 343m/s = 0.0343 cm/us
+  float dist = duration * 0.0343 / 2;
+  return dist;
+}
 
-6. percentage
-The Math: (waterHeight / usableHeight) * 100
+void loop() {
+  // 1. Get Distance
+  float rawDist = getDistance();
 
-What it is: This normalizes the tank size. Whether your tank is a small bucket or a giant industrial silo, this gives you a familiar 0-100% value for your phone app.
+  // 2. Filter & Limit Data
+  // (JSN-SR04T sometimes returns 0 if signal is lost, ignore those)
+  if (rawDist > 0 && rawDist < 400) {
+    
+    // 3. Calculate Percentage
+    // Formula: % = (TotalDepth - CurrentDistance) / (TotalDepth - BlindZone)
+    float waterHeight = TANK_HEIGHT_CM - rawDist;
+    float usableHeight = TANK_HEIGHT_CM - SENSOR_GAP_CM;
+    
+    int percentage = (waterHeight / usableHeight) * 100;
+    
+    // Clamp to 0-100
+    if (percentage < 0) percentage = 0;
+    if (percentage > 100) percentage = 100;
+
+    Serial.print("Distance: "); Serial.print(rawDist);
+    Serial.print("cm | Level: "); Serial.print(percentage); Serial.println("%");
+
+    // 4. Send to Cloud (Every 2 Seconds)
+    if (Firebase.ready() && signupOK && (millis() - sendDataPrevMillis > 2000)) {
+      sendDataPrevMillis = millis();
+
+      // Define the path exactly as the React App expects it
+      String documentPath = "water_monitor/current_status";
+
+      // Create JSON payload
+      FirebaseJson content;
+      content.set("fields/level/integerValue", percentage);
+      
+      // Add a timestamp field (optional, helps with debugging)
+      // content.set("fields/updated/timestampValue", "REQUEST_TIME_STAMP");
+
+      Serial.print("Uploading... ");
+      
+      // Write to Firestore
+      if (Firebase.Firestore.patchDocument(&fbdo, FIREBASE_PROJECT_ID, "", documentPath.c_str(), content.raw(), "level")) {
+          Serial.println("Success!");
+      } else {
+          Serial.print("Failed: ");
+          Serial.println(fbdo.errorReason());
+      }
+    }
+  } else {
+    Serial.println("Sensor Error or Out of Range");
+  }
+  
+  delay(100); // Short delay between loop cycles
+}
