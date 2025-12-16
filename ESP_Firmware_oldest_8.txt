@@ -1,0 +1,145 @@
+/*
+ * PROJECT: IoT Water Level Monitor (Firebase Cloud Version)
+ * HARDWARE: ESP32 + JSN-SR04T (Waterproof Ultrasonic Sensor)
+ * AUTHOR: IoT Systems Architect
+ * * INSTRUCTIONS:
+ * 1. Install library: "Firebase Arduino Client" by Mobizt (v4.x.x) via Library Manager.
+ * 2. Update the "USER CONFIGURATION" section below with your keys.
+ * 3. Select Board: "DOIT ESP32 DEVKIT V1" (or similar).
+ * 4. Upload.
+ */
+
+#include <WiFi.h>
+#include <Firebase_ESP_Client.h>
+
+// Provide the token generation process info.
+#include "addons/TokenHelper.h"
+// Provide the RTDB payload printing info and other helper functions.
+#include "addons/RTDBHelper.h"
+
+// ==============================
+//    USER CONFIGURATION
+// ==============================
+
+// 1. Wi-Fi Credentials
+#define WIFI_SSID "YOUR_WIFI_NAME"
+#define WIFI_PASSWORD "YOUR_WIFI_PASSWORD"
+
+// 2. Firebase Settings (From Firebase Console -> Project Settings)
+#define API_KEY "YOUR_API_KEY_COPIED_FROM_CONSOLE"
+#define FIREBASE_PROJECT_ID "YOUR_PROJECT_ID" // e.g., water-level-monitor-123
+
+// 3. Tank Calibration
+#define TANK_HEIGHT_CM 100.0  // Distance from sensor to bottom of empty tank
+#define SENSOR_GAP_CM 20.0    // Distance from sensor to maximum water level (Blind zone)
+
+// ==============================
+//    END CONFIGURATION
+// ==============================
+
+// Hardware Pins
+#define TRIG_PIN 5
+#define ECHO_PIN 18
+
+// Firebase Objects
+FirebaseData fbdo;
+FirebaseAuth auth;
+FirebaseConfig config;
+
+bool signupOK = false;
+unsigned long sendDataPrevMillis = 0;
+
+// Function to read ultrasonic sensor
+float getDistance() {
+  // Clear trigger
+  digitalWrite(TRIG_PIN, LOW);
+  delayMicroseconds(2);
+  
+  // Send 10us pulse
+  digitalWrite(TRIG_PIN, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(TRIG_PIN, LOW);
+  
+  // Read echo
+  long duration = pulseIn(ECHO_PIN, HIGH);
+  
+  // Calculate distance (Speed of sound = 343m/s)
+  return duration * 0.034 / 2;
+}
+
+void setup() {
+  Serial.begin(115200);
+  
+  pinMode(TRIG_PIN, OUTPUT);
+  pinMode(ECHO_PIN, INPUT);
+
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  Serial.print("Connecting to Wi-Fi");
+  while (WiFi.status() != WL_CONNECTED) {
+    Serial.print(".");
+    delay(300);
+  }
+  Serial.println();
+  Serial.println("Connected to Wi-Fi");
+
+  // Firebase Config
+  config.api_key = API_KEY;
+  
+  // We leave database_url empty for Firestore, but project_id is required for JSON generation
+  config.service_account.json.project_id = FIREBASE_PROJECT_ID;
+
+  // Sign up anonymously
+  if (Firebase.signUp(&config, &auth, "", "")){
+    Serial.println("Firebase Auth Success");
+    signupOK = true;
+  } else {
+    Serial.printf("Auth Failed: %s\n", config.signer.signupError.message.c_str());
+  }
+
+  Firebase.begin(&config, &auth);
+  Firebase.reconnectWiFi(true);
+}
+
+void loop() {
+  // 1. Read Sensor
+  float dist = getDistance();
+  
+  // 2. Calculate Percentage
+  // Formula: % = ( (TotalDepth - CurrentRead) / (TotalDepth - Gap) ) * 100
+  float waterHeight = TANK_HEIGHT_CM - dist;
+  float maxAvailableHeight = TANK_HEIGHT_CM - SENSOR_GAP_CM;
+  int percentage = (waterHeight / maxAvailableHeight) * 100;
+  
+  // Clamp values to stay between 0-100
+  if (percentage < 0) percentage = 0;
+  if (percentage > 100) percentage = 100;
+
+  Serial.print("Dist: "); Serial.print(dist);
+  Serial.print("cm | Level: "); Serial.print(percentage); Serial.println("%");
+
+  // 3. Upload to Firestore (Every 5 seconds)
+  if (Firebase.ready() && signupOK && (millis() - sendDataPrevMillis > 5000)) {
+    sendDataPrevMillis = millis();
+
+    // The Path: collection/document
+    String documentPath = "water_monitor/current_status";
+
+    // Create JSON Object
+    FirebaseJson content;
+    content.set("fields/level/integerValue", percentage);
+    content.set("fields/status/stringValue", (percentage < 20) ? "LOW" : "NORMAL");
+    
+    // IMPORTANT: Timestamps require a specific server transform in REST API
+    // We skip it for simplicity here, relying on the 'level' change.
+
+    Serial.print("Uploading to Firestore... ");
+    
+    // Use patchDocument to update specific fields
+    if (Firebase.Firestore.patchDocument(&fbdo, FIREBASE_PROJECT_ID, "" /* databaseId default */, documentPath.c_str(), content.raw(), "level,status")) {
+        Serial.println("Success!");
+    } else {
+        Serial.print("Failed: ");
+        Serial.println(fbdo.errorReason());
+    }
+  }
+}

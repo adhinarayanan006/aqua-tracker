@@ -1,0 +1,460 @@
+import { useState, useEffect, useRef } from 'react';
+import { initializeApp } from 'firebase/app';
+import { 
+  getFirestore, 
+  doc, 
+  onSnapshot 
+} from 'firebase/firestore';
+import { 
+  getAuth, 
+  signInAnonymously, 
+  onAuthStateChanged
+} from 'firebase/auth';
+
+// --- IMPORTANT FOR LOCAL USE ---
+// In your local VS Code, UNCOMMENT the line below:
+// import { LocalNotifications } from '@capacitor/local-notifications'; 
+
+// --- MOCK FOR PREVIEW (DELETE THIS BLOCK IN LOCAL APP) ---
+const LocalNotifications = {
+  requestPermissions: async () => {
+    console.log("Simulating permission request for Preview");
+    return { display: 'granted' };
+  },
+  schedule: async (options: any) => {
+    console.log("Simulating Notification:", options);
+    // Visual feedback for preview
+    if (options.notifications && options.notifications[0]) {
+       // Using browser alert to simulate phone notification in preview
+       // alert(`PHONE ALERT: ${options.notifications[0].title}`);
+    }
+  }
+};
+// --------------------------------------------------------
+
+import { 
+  AreaChart, 
+  Area, 
+  XAxis, 
+  YAxis, 
+  CartesianGrid, 
+  Tooltip, 
+  ResponsiveContainer 
+} from 'recharts';
+import { 
+  Wifi, 
+  AlertTriangle, 
+  Droplets, 
+  Activity,
+  History,
+  TrendingDown,
+  ArrowUpCircle,
+  WifiOff,
+  CalendarDays,
+  Clock
+} from 'lucide-react';
+
+// ==========================================
+// CONFIGURATION
+// ==========================================
+const firebaseConfig = {
+  apiKey: "YOUR_API_KEY_HERE",
+  authDomain: "YOUR_PROJECT_ID.firebaseapp.com",
+  projectId: "YOUR_PROJECT_ID",
+  storageBucket: "YOUR_PROJECT_ID.firebasestorage.app",
+  messagingSenderId: "SENDER_ID",
+  appId: "APP_ID"
+};
+
+// Initialize Firebase
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+
+export default function WaterLevelDashboard() {
+  const [user, setUser] = useState<any>(null);
+  const [waterLevel, setWaterLevel] = useState(50);
+  const [loading, setLoading] = useState(true);
+  
+  // Navigation & View States
+  const [view, setView] = useState<'dashboard' | 'history'>('dashboard');
+  const [timeRange, setTimeRange] = useState<'24h' | '7d' | '30d'>('24h');
+  const [isSimulated, setIsSimulated] = useState(false);
+  
+  // Data States
+  const [historyData, setHistoryData] = useState<any[]>([]);
+  const [totalConsumed, setTotalConsumed] = useState(0);
+
+  // --- NEW: Notification Cooldown Ref ---
+  const lastAlertTime = useRef<number>(0);
+
+  // --- AUTHENTICATION ---
+  useEffect(() => {
+    const initAuth = async () => {
+      try {
+        await signInAnonymously(auth);
+        
+        // --- NEW: Request Permission on Startup ---
+        const perm = await LocalNotifications.requestPermissions();
+        if (perm.display === 'granted') {
+          console.log("Notifications permitted");
+        }
+      } catch (err) {
+        console.error("Auth Failed - Switching to Simulation Mode:", err);
+        setIsSimulated(true);
+        setLoading(false); 
+      }
+    };
+    initAuth();
+
+    const unsubAuth = onAuthStateChanged(auth, (currentUser) => {
+      if (currentUser) {
+        setUser(currentUser);
+        setIsSimulated(false);
+      }
+    });
+    return () => unsubAuth();
+  }, []);
+
+  // --- NEW: NOTIFICATION LOGIC ---
+  const checkAndSendAlert = async (level: number) => {
+    const now = Date.now();
+    const COOLDOWN = 15 * 60 * 1000; // 15 Minutes (prevents spam)
+
+    // Only alert if cooldown has passed
+    if (now - lastAlertTime.current > COOLDOWN) {
+      if (level > 90) {
+        await LocalNotifications.schedule({
+          notifications: [{
+            title: "⚠️ Tank Overflow Risk!",
+            body: `Water level is at ${level}%. Please turn off the pump.`,
+            id: 1,
+            schedule: { at: new Date(Date.now() + 1000) }, // Trigger in 1 sec
+            sound: undefined,
+            attachments: [],
+            actionTypeId: "",
+            extra: null
+          }]
+        });
+        lastAlertTime.current = now;
+      } else if (level < 20) {
+        await LocalNotifications.schedule({
+          notifications: [{
+            title: "💧 Water Critical Low",
+            body: `Level is down to ${level}%. Time to refill.`,
+            id: 2,
+            schedule: { at: new Date(Date.now() + 1000) },
+            sound: undefined,
+            attachments: [],
+            actionTypeId: "",
+            extra: null
+          }]
+        });
+        lastAlertTime.current = now;
+      }
+    }
+  };
+
+  // --- REPORT GENERATOR ---
+  useEffect(() => {
+    const mockData = [];
+    let consumed = 0;
+    const now = new Date();
+
+    if (timeRange === '24h') {
+      let current = 80;
+      for (let i = 24; i >= 0; i--) {
+        const time = new Date(now.getTime() - i * 60 * 60 * 1000);
+        const hour = time.getHours();
+        let change = 0;
+        if (hour >= 6 && hour <= 9) change = -15;       
+        else if (hour >= 18 && hour <= 20) change = -10; 
+        else if (hour === 14) change = 30;              
+        else change = -0.5;                             
+        const prev = current;
+        current += change;
+        if (current > 100) current = 100;
+        if (current < 0) current = 0;
+        if (current < prev) consumed += (prev - current);
+        const label = `${hour.toString().padStart(2, '0')}:00`;
+        mockData.push({ label, level: Math.round(current) });
+      }
+      setTotalConsumed(Math.round(consumed)); 
+    } else if (timeRange === '7d') {
+      for (let i = 6; i >= 0; i--) {
+        const date = new Date(now);
+        date.setDate(date.getDate() - i);
+        const dayName = date.toLocaleDateString('en-US', { weekday: 'short' });
+        const avgLevel = Math.floor(Math.random() * (90 - 50 + 1)) + 50;
+        consumed += Math.floor(Math.random() * (60 - 20 + 1)) + 20;
+        mockData.push({ label: dayName, level: avgLevel });
+      }
+      setTotalConsumed(Math.round(consumed));
+    } else if (timeRange === '30d') {
+      for (let i = 29; i >= 0; i--) {
+        const date = new Date(now);
+        date.setDate(date.getDate() - i);
+        const dayLabel = date.getDate().toString(); 
+        const avgLevel = Math.floor(Math.random() * (95 - 30 + 1)) + 30;
+        consumed += Math.floor(Math.random() * (50 - 15 + 1)) + 15;
+        mockData.push({ label: dayLabel, level: avgLevel });
+      }
+      setTotalConsumed(Math.round(consumed)); 
+    }
+    setHistoryData(mockData);
+  }, [timeRange]);
+
+  // --- LIVE DATA LISTENER ---
+  useEffect(() => {
+    if (!user) return;
+    const docRef = doc(db, 'water_monitor', 'current_status');
+    const unsub = onSnapshot(docRef, (docSnap) => {
+      setLoading(false);
+      if (docSnap.exists()) {
+        const data = docSnap.data();
+        if (data?.level !== undefined) {
+          const newLevel = data.level;
+          setWaterLevel(newLevel);
+          
+          // --- NEW: TRIGGER ALERT CHECK ---
+          checkAndSendAlert(newLevel);
+          
+          if (timeRange === '24h') {
+            setHistoryData(prev => {
+              const now = new Date();
+              const label = `${now.getHours()}:${now.getMinutes().toString().padStart(2, '0')}`;
+              const newPoint = { label, level: newLevel };
+              const newData = [...prev, newPoint];
+              if (newData.length > 25) newData.shift(); 
+              return newData;
+            });
+          }
+        }
+      }
+    }, (err) => {
+       console.warn("Firestore access failed. Using simulation.", err);
+       setLoading(false);
+       setIsSimulated(true);
+    });
+    return () => unsub();
+  }, [user, timeRange]);
+
+  // --- HELPER: Colors ---
+  const getStatusColor = (level: number) => {
+    if (level < 20) return "text-red-400";
+    if (level > 90) return "text-yellow-400";
+    return "text-emerald-400";
+  };
+  const getWaveColor = (level: number) => {
+    if (level < 20) return "bg-red-500";
+    if (level > 90) return "bg-yellow-500";
+    return "bg-blue-500";
+  };
+
+  return (
+    <div className="min-h-screen bg-slate-900 text-slate-100 font-sans pb-20 md:pb-0">
+      {/* HEADER */}
+      <div className="bg-slate-950 p-6 border-b border-slate-800 sticky top-0 z-50">
+        <div className="max-w-md mx-auto flex justify-between items-center">
+          <div>
+            <h1 className="text-xl font-bold flex items-center gap-2">
+              <Droplets className="text-blue-500" /> Aqua Track
+            </h1>
+            <p className="text-xs text-slate-400 flex items-center gap-1 mt-1">
+              {isSimulated ? (
+                 <>
+                  <WifiOff size={12} className="text-amber-500" />
+                  <span className="text-amber-500/80">Offline Mode</span>
+                 </>
+              ) : (
+                <>
+                  <Wifi size={12} className={user ? "text-emerald-500" : "text-slate-600"} />
+                  {loading ? "Syncing..." : "Live Connection"}
+                </>
+              )}
+            </p>
+          </div>
+          <div className="flex gap-2 bg-slate-900 p-1 rounded-lg border border-slate-800">
+            <button 
+              onClick={() => setView('dashboard')}
+              className={`p-2 rounded-md transition-all ${view === 'dashboard' ? 'bg-blue-600 text-white shadow-lg' : 'text-slate-400 hover:bg-slate-800'}`}
+            >
+              <Activity size={18} />
+            </button>
+            <button 
+              onClick={() => setView('history')}
+              className={`p-2 rounded-md transition-all ${view === 'history' ? 'bg-blue-600 text-white shadow-lg' : 'text-slate-400 hover:bg-slate-800'}`}
+            >
+              <History size={18} />
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div className="max-w-md mx-auto p-6 space-y-6">
+        {view === 'dashboard' && (
+          <>
+            <div className="relative w-56 h-72 border-4 border-slate-700 rounded-2xl bg-slate-800 overflow-hidden shadow-2xl mx-auto ring-4 ring-slate-900 ring-offset-2 ring-offset-slate-800">
+              <div className="absolute top-0 right-0 w-1/2 h-full bg-gradient-to-l from-white/10 to-transparent pointer-events-none z-20"></div>
+              {[75, 50, 25].map(tick => (
+                <div key={tick} className="absolute left-0 w-full border-t border-slate-600/30 z-10 flex justify-between px-2 text-[10px] text-slate-500 font-mono" style={{ top: `${100 - tick}%` }}>
+                  <span>{tick}%</span>
+                </div>
+              ))}
+              <div 
+                className={`absolute bottom-0 left-0 w-full transition-all duration-1000 ease-in-out ${getWaveColor(waterLevel)} opacity-90 z-0`}
+                style={{ height: `${waterLevel}%` }}
+              >
+                <div className="w-[200%] h-4 bg-white/20 absolute -top-2 animate-wave"></div>
+              </div>
+              <div className="absolute inset-0 flex flex-col items-center justify-center z-30 pointer-events-none drop-shadow-lg">
+                <span className="text-5xl font-black text-white tracking-tighter">
+                  {Math.round(waterLevel)}<span className="text-2xl">%</span>
+                </span>
+                <span className="text-xs font-medium text-white/80 mt-1 uppercase tracking-widest">Capacity</span>
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div className="bg-slate-800/50 p-4 rounded-xl border border-slate-700 backdrop-blur-sm shadow-lg">
+                <div className="flex items-center gap-2 mb-2">
+                  <Activity size={16} className={getStatusColor(waterLevel)} />
+                  <span className="text-xs text-slate-400 font-medium uppercase">Current Status</span>
+                </div>
+                <div className={`text-lg font-bold ${getStatusColor(waterLevel)}`}>
+                  {waterLevel < 20 ? "Critical Low" : waterLevel > 90 ? "Tank Full" : "Optimal"}
+                </div>
+              </div>
+              <div className="bg-slate-800/50 p-4 rounded-xl border border-slate-700 backdrop-blur-sm shadow-lg">
+                <div className="flex items-center gap-2 mb-2">
+                  <TrendingDown size={16} className="text-blue-400" />
+                  <span className="text-xs text-slate-400 font-medium uppercase">Usage (Today)</span>
+                </div>
+                <div className="text-lg font-bold text-white">
+                  {timeRange === '24h' ? Math.round(totalConsumed) : '--'}%
+                </div>
+              </div>
+            </div>
+             {(waterLevel < 20 || waterLevel > 90) && (
+              <div className="bg-red-500/10 border border-red-500/50 rounded-xl p-4 flex gap-4 items-center animate-pulse">
+                <div className="bg-red-500/20 p-2 rounded-full">
+                  <AlertTriangle className="text-red-500" size={24} />
+                </div>
+                <div>
+                  <h3 className="font-bold text-red-400 text-sm">Action Required</h3>
+                  <p className="text-xs text-red-300/80">
+                    {waterLevel > 90 ? "Tank overflow! Turn off pump." : "Water critically low! Refill."}
+                  </p>
+                </div>
+              </div>
+            )}
+          </>
+        )}
+        {view === 'history' && (
+          <div className="space-y-6">
+            <div className="flex justify-center bg-slate-800 p-1 rounded-xl border border-slate-700">
+              {['24h', '7d', '30d'].map((r) => (
+                <button
+                  key={r}
+                  onClick={() => setTimeRange(r as any)}
+                  className={`px-4 py-2 text-xs font-bold rounded-lg transition-all flex-1 ${
+                    timeRange === r 
+                      ? 'bg-blue-600 text-white shadow-md' 
+                      : 'text-slate-400 hover:text-white'
+                  }`}
+                >
+                  {r === '24h' ? '24 Hours' : r === '7d' ? 'Weekly' : 'Monthly'}
+                </button>
+              ))}
+            </div>
+            <div className="bg-slate-800 rounded-2xl p-4 border border-slate-700 shadow-xl">
+              <h3 className="text-sm font-bold text-slate-300 mb-4 flex items-center gap-2">
+                {timeRange === '24h' ? <Clock size={16} className="text-blue-500"/> : <CalendarDays size={16} className="text-blue-500"/>} 
+                {timeRange === '24h' ? 'Real-time Trend' : timeRange === '7d' ? 'Last 7 Days' : 'Monthly Overview'}
+              </h3>
+              <div className="h-64 w-full">
+                <ResponsiveContainer width="100%" height="100%">
+                  <AreaChart data={historyData}>
+                    <defs>
+                      <linearGradient id="colorLevel" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.4}/>
+                        <stop offset="95%" stopColor="#3b82f6" stopOpacity={0}/>
+                      </linearGradient>
+                    </defs>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#334155" vertical={false} />
+                    <XAxis 
+                      dataKey="label" 
+                      stroke="#64748b" 
+                      fontSize={10} 
+                      tickLine={false} 
+                      axisLine={false} 
+                      interval={timeRange === '24h' ? 3 : 0} 
+                    />
+                    <YAxis stroke="#64748b" fontSize={10} tickLine={false} axisLine={false} unit="%" />
+                    <Tooltip 
+                      contentStyle={{ backgroundColor: '#1e293b', borderColor: '#334155', borderRadius: '8px', color: '#fff' }}
+                      itemStyle={{ color: '#60a5fa' }}
+                      formatter={(value) => [`${value}%`, 'Avg Level']}
+                    />
+                    <Area 
+                      type="monotone" 
+                      dataKey="level" 
+                      stroke="#3b82f6" 
+                      strokeWidth={3}
+                      fillOpacity={1} 
+                      fill="url(#colorLevel)" 
+                      animationDuration={1500}
+                    />
+                  </AreaChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+            <div className="bg-slate-800 rounded-2xl p-4 border border-slate-700">
+              <h3 className="text-sm font-bold text-slate-300 mb-4">
+                {timeRange === '24h' ? 'Daily Insights' : timeRange === '7d' ? 'Weekly Summary' : 'Monthly Report'}
+              </h3>
+              <div className="space-y-4">
+                <div className="flex justify-between items-center pb-4 border-b border-slate-700">
+                  <div className="flex items-center gap-3">
+                    <div className="bg-blue-500/20 p-2 rounded-lg"><TrendingDown size={20} className="text-blue-400"/></div>
+                    <div>
+                      <div className="text-sm font-medium text-slate-300">Total Consumption</div>
+                      <div className="text-xs text-slate-500">
+                        {timeRange === '24h' ? 'Since 12:00 AM' : 'Cumulative usage'}
+                      </div>
+                    </div>
+                  </div>
+                  <div className="text-xl font-bold text-white">
+                    {Math.round(totalConsumed)}{timeRange === '24h' ? '%' : 'x Tank'}
+                  </div>
+                </div>
+                <div className="flex justify-between items-center">
+                  <div className="flex items-center gap-3">
+                    <div className="bg-emerald-500/20 p-2 rounded-lg"><ArrowUpCircle size={20} className="text-emerald-400"/></div>
+                    <div>
+                      <div className="text-sm font-medium text-slate-300">Efficiency Score</div>
+                      <div className="text-xs text-slate-500">Based on usage pattern</div>
+                    </div>
+                  </div>
+                  <div className="text-sm font-bold text-emerald-400">Good</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+      <div className="fixed bottom-0 w-full bg-slate-950 border-t border-slate-800 p-2 text-center text-[10px] text-slate-600">
+        Connected via Firebase IoT • Aqua Track v3.0
+      </div>
+      <style>{`
+        @keyframes wave {
+          0% { transform: translateX(0); }
+          50% { transform: translateX(-50%); }
+          100% { transform: translateX(0); }
+        }
+        .animate-wave {
+          animation: wave 4s infinite linear;
+        }
+      `}</style>
+    </div>
+  );
+}

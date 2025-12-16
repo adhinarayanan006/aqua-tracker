@@ -1,0 +1,90 @@
+/*
+ * OPTION C: BLYNK IOT
+ * * Logic:
+ * 1. Connects to Wi-Fi and Blynk Cloud.
+ * 2. Reads Ultrasonic Sensor.
+ * 3. Pushes data to Virtual Pin V0.
+ * * * REQUIRED LIBRARY:
+ * - Install "Blynk" by Volodymyr Shymanskyy via Arduino Library Manager
+ */
+
+// --- BLYNK CONFIGURATION (Get these from Blynk.Console) ---
+#define BLYNK_TEMPLATE_ID "TMPLxxxxxx"
+#define BLYNK_DEVICE_NAME "Water Monitor"
+#define BLYNK_AUTH_TOKEN "YourAuthTokenHere"
+
+// Comment this out to disable prints and save space
+#define BLYNK_PRINT Serial
+
+#include <WiFi.h>
+#include <WiFiClient.h>
+#include <BlynkSimpleEsp32.h>
+
+// --- USER WIFI ---
+char ssid[] = "YOUR_WIFI_NAME";
+char pass[] = "YOUR_WIFI_PASSWORD";
+
+// --- SENSOR CONFIG ---
+#define TRIG_PIN 5
+#define ECHO_PIN 18
+const float TANK_HEIGHT_CM = 100.0; 
+const float SENSOR_GAP_CM = 20.0;   
+
+BlynkTimer timer;
+
+// Function to read sensor and send to Blynk
+void sendSensor() {
+  digitalWrite(TRIG_PIN, LOW);
+  delayMicroseconds(2);
+  digitalWrite(TRIG_PIN, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(TRIG_PIN, LOW);
+  
+  long duration = pulseIn(ECHO_PIN, HIGH);
+  float distance = duration * 0.034 / 2;
+  
+  // Calculate Percentage
+  float maxWater = TANK_HEIGHT_CM - SENSOR_GAP_CM;
+  float currentWater = TANK_HEIGHT_CM - distance;
+  int percentage = (currentWater / maxWater) * 100;
+
+  // Clamp values
+  if (percentage < 0) percentage = 0;
+  if (percentage > 100) percentage = 100;
+
+  // Send to Blynk Virtual Pin V0
+  // Only send if connected to avoid lag
+  if (Blynk.connected()) {
+    Blynk.virtualWrite(V0, percentage);
+    
+    // Optional: Send alert if low
+    if (percentage < 20) {
+      Blynk.logEvent("water_low", "Warning: Water level is below 20%!");
+    }
+  }
+
+  Serial.print("Distance: ");
+  Serial.print(distance);
+  Serial.print(" cm | Level: ");
+  Serial.print(percentage);
+  Serial.println("%");
+}
+
+void setup() {
+  Serial.begin(115200);
+
+  pinMode(TRIG_PIN, OUTPUT);
+  pinMode(ECHO_PIN, INPUT);
+
+  // Connect to Blynk
+  Blynk.begin(BLYNK_AUTH_TOKEN, ssid, pass);
+
+  // Setup a timer to send data every 2 seconds (2000L)
+  // We use a timer instead of delay() to keep connection alive
+  timer.setInterval(2000L, sendSensor);
+}
+
+void loop() {
+  Blynk.run();
+  timer.run();
+}

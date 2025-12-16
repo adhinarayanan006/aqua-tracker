@@ -1,0 +1,53 @@
+Imagine looking at your water tank from the side:
+
+Plaintext
+
+       [ SENSOR ]  <--- Mounted on the lid
+           |
+           |   <-- rawDist (The Air Gap)
+           v
+    ~~~~~~~~~~~~~~~~  <--- Water Surface
+    |              |
+    |              |
+    |  waterHeight |  <--- The Water
+    |              |
+    |______________|  <--- Tank Bottom
+1. TANK_HEIGHT_CM (Total Depth)
+What it is: The total distance from the tip of the sensor to the bottom of the empty tank.
+
+How to measure: Put a tape measure through the sensor hole until it hits the bottom.
+
+Why we need it: The sensor doesn't know where the bottom is; you have to tell it.
+
+2. rawDist (The Air Gap)
+What it is: The distance the sensor actually measures. It measures the empty space (air) between the sensor and the water surface.
+
+Behavior:
+
+Tank Full = Small rawDist (e.g., 20cm).
+
+Tank Empty = Large rawDist (e.g., 100cm).
+
+3. SENSOR_GAP_CM (The Blind Zone)
+What it is: The safety distance at the top. The JSN-SR04T sensor cannot read anything closer than ~20cm. If water touches the sensor, it fails.
+
+Definition of "100% Full": We decide the tank is "Full" when the water reaches this line (e.g., 20cm from the top), not when it hits the roof.
+
+4. waterHeight
+The Math: TANK_HEIGHT_CM - rawDist
+
+What it is: The actual depth of the water.
+
+Example: If the tank is 100cm deep and the sensor sees 40cm of air, then there is 60cm of water.
+
+5. usableHeight
+The Math: TANK_HEIGHT_CM - SENSOR_GAP_CM
+
+What it is: The valid "measuring stick."
+
+Example: If your tank is 100cm deep, but the top 20cm is the blind zone, your actual usable scale is only 80cm.
+
+6. percentage
+The Math: (waterHeight / usableHeight) * 100
+
+What it is: This normalizes the tank size. Whether your tank is a small bucket or a giant industrial silo, this gives you a familiar 0-100% value for your phone app.
